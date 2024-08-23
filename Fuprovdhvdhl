@@ -1,0 +1,206 @@
+import discord
+from discord.ext import commands
+
+# Your bot token
+TOKEN = 'MTI3NjM0MDAxMzQxMTU5ODMzNg.GXRgQS.747RdBVU7KmwVU6iiSx7t45hkxE2CBM6r3jKYo'  # Replace with your actual bot token
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+
+bot = commands.Bot(command_prefix='.', intents=intents)
+
+# Dictionary to keep track of tickets
+tickets = {}
+blacklisted_users = set()  # Track blacklisted user IDs
+
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user.name} (ID: {bot.user.id})')
+
+@bot.command()
+async def dm(ctx, user: discord.User, *, message: str):
+    """Sends a direct message to a user."""
+    try:
+        await user.send(message)
+        await ctx.send(f"DM sent to {user.name}!")
+    except discord.HTTPException:
+        await ctx.send(f"Failed to send DM to {user.name}.")
+    except discord.NotFound:
+        await ctx.send(f"User {user} not found.")
+    except discord.Forbidden:
+        await ctx.send(f"I don't have permission to send a DM to {user.name}.")
+    except Exception as e:
+        await ctx.send(f"An unexpected error occurred: {e}")
+
+@bot.command()
+async def blacklist(ctx, user: discord.Member, *, reason: str):
+    """Blacklists a user and notifies them."""
+    if ctx.author.id != ctx.guild.owner.id:
+        await ctx.send("You don't have permission to use this command.")
+        return
+
+    if user.id in blacklisted_users:
+        await ctx.send(f"{user.mention} is already blacklisted.")
+        return
+
+    blacklisted_users.add(user.id)
+
+    # Remove all roles and assign the blacklist role
+    await user.edit(roles=[discord.Object(id=1274783289445453948)])  # Blacklist role ID
+
+    embed = discord.Embed(
+        title="You Have Been Blacklisted",
+        description=f"You have been blacklisted by {ctx.author.mention} for the following reason: {reason}\n"
+                    "To appeal this, go to this channel and type `.appeal`: https://discord.com/channels/1202733384955072532/1276394214761955369",
+        color=discord.Color.red()
+    )
+    try:
+        await user.send(embed=embed)
+    except discord.Forbidden:
+        await ctx.send(f"Failed to send DM to {user.mention}.")
+
+    # Log the blacklist action
+    log_channel = bot.get_channel(1276374390635757580)  # Log channel ID
+    if log_channel:
+        await log_channel.send(f"{user.mention} has been blacklisted by {ctx.author.mention}. Reason: {reason}")
+
+    # Notify in the server
+    await ctx.send(f"{user.mention} has been blacklisted. Reason: {reason}")
+
+@bot.command()
+async def unblacklist(ctx, user: discord.Member):
+    """Unblacklists a user and restores their roles."""
+    if ctx.author.id != ctx.guild.owner.id:
+        await ctx.send("You don't have permission to use this command.")
+        return
+
+    if user.id not in blacklisted_users:
+        await ctx.send(f"{user.mention} is not blacklisted.")
+        return
+
+    blacklisted_users.remove(user.id)
+
+    # Restore roles and assign the new role
+    await user.edit(roles=[discord.Object(id=1273750570431283273)])  # Role ID for unblacklisted users
+
+    embed = discord.Embed(
+        title="You Have Been Unblacklisted",
+        description=f"You have been unblacklisted by {ctx.author.mention}. You have been given the role <@&1273750570431283273>.",
+        color=discord.Color.green()
+    )
+    try:
+        await user.send(embed=embed)
+    except discord.Forbidden:
+        await ctx.send(f"Failed to send DM to {user.mention}.")
+
+    # Log the unblacklist action
+    log_channel = bot.get_channel(1276374390635757580)  # Log channel ID
+    if log_channel:
+        await log_channel.send(f"{user.mention} has been unblacklisted by {ctx.author.mention} and assigned the role <@&1273750570431283273>.")
+
+@bot.command()
+async def support(ctx):
+    """Opens a support ticket and notifies the user."""
+    user = ctx.author
+
+    if user.id in tickets:
+        await user.send("You already have an open ticket.")
+        return
+
+    guild = ctx.guild
+    support_channel = await guild.create_text_channel(f"support-{user.name}", reason="Support ticket opened", overwrites={
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        user: discord.PermissionOverwrite(view_channel=True)
+    })
+    tickets[user.id] = support_channel.id
+
+    embed = discord.Embed(
+        title="Support Ticket Opened",
+        description="Your support ticket has been opened. Please wait for a response.",
+        color=discord.Color.blue()
+    )
+    await user.send(embed=embed)
+    await support_channel.send(f"Support ticket opened by {user.mention}. Please wait for support to respond.")
+
+@bot.command()
+async def appeal(ctx):
+    """Opens an appeal ticket and notifies the user."""
+    user = ctx.author
+
+    if user.id in tickets:
+        await user.send("You already have an open ticket.")
+        return
+
+    guild = ctx.guild
+    appeal_channel = await guild.create_text_channel(f"appeal-{user.name}", reason="Appeal ticket opened", overwrites={
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        user: discord.PermissionOverwrite(view_channel=True)
+    })
+    tickets[user.id] = appeal_channel.id
+
+    embed = discord.Embed(
+        title="Appeal Ticket Opened",
+        description="Your appeal ticket has been opened. Please wait for a response.",
+        color=discord.Color.orange()
+    )
+    await user.send(embed=embed)
+    await appeal_channel.send(f"Appeal ticket opened by {user.mention}. Please wait for staff to respond.")
+
+@bot.command()
+async def close_ticket(ctx, *, reason: str = None):
+    """Closes the support or appeal ticket."""
+    if not ctx.channel.name.startswith(('support-', 'appeal-')):
+        await ctx.send("This command can only be used in a ticket channel.")
+        return
+
+    if ctx.author.id not in tickets:
+        await ctx.send("You don't have an open ticket.")
+        return
+
+    channel_id = tickets[ctx.author.id]
+    channel = bot.get_channel(channel_id)
+    if channel:
+        await channel.delete()
+        del tickets[ctx.author.id]
+
+        embed = discord.Embed(
+            title="Ticket Closed",
+            description=f"Your ticket has been closed by {ctx.author.mention}.",
+            color=discord.Color.red()
+        )
+        if reason:
+            embed.add_field(name="Reason", value=reason)
+
+        try:
+            await ctx.author.send(embed=embed)
+        except discord.Forbidden:
+            await ctx.send("I cannot send a message to this user.")
+
+    # Announce in a specific channel
+    log_channel = bot.get_channel(1276374390635757580)  # Replace with your log channel ID
+    if log_channel:
+        await log_channel.send(f"Ticket closed for {ctx.author.mention} by {ctx.author.mention}. Reason: {reason if reason else 'No reason provided'}.")
+
+@bot.event
+async def on_message(message):
+    # Check if the message is sent by the bot itself
+    if message.author == bot.user:
+        return
+
+    # Relay messages from server channels to the user
+    if message.channel.id in tickets.values():
+        user_id = next(key for key, value in tickets.items() if value == message.channel.id)
+        user = await bot.fetch_user(user_id)
+        await user.send(f"[Support] **{message.author}**: {message.content}")
+
+    # Relay messages from the user to the server channel
+    elif isinstance(message.channel, discord.DMChannel):
+        if message.author.id in tickets:
+            channel_id = tickets[message.author.id]
+            channel = bot.get_channel(channel_id)
+            await channel.send(f"**{message.author}**: {message.content}")
+
+    await bot.process_commands(message)
+
+bot.run(TOKEN)
